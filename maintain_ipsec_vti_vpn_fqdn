@@ -1,0 +1,209 @@
+#!/bin/vbash
+# This script is iused to workaround the fact that, in an Edgerouter, an IPSEC VPN using VTI tunnels
+# cannot use FQDNs particaularly useful for dynamic IP addresses. See README file alongside.
+
+# Get the optional flags
+while getopts ":vid" opt; do
+  case $opt in
+	v)
+		# The config change commands to be run and the impacted existing config
+                # will be sent to stdout
+		VERBOSE=1
+		;;
+        i)
+                # If no changes are required, setting this flag will log that fact
+                INFO=1
+                ;; 
+	d)
+		# The config will not be changed in the Edgerouter
+		DRYRUN=1
+		;;
+	esac
+done
+
+
+# Send stderr and stdout to the log file if we're running non-interactively
+if [[ ! -t 0 ]]; then
+  exec >> /var/log/maintain_ipsec_vti_fqdn.log
+  exec 2>&1
+fi
+
+# Location we have installed any proxy-provide scripts and config - eg Cloudflare
+# Needs to be exported so that called scripts will also pick it up
+export INSTALL_DIR=/config/scripts
+
+# Command for running a configure sub-command (this might need to go in config)
+CONFIGURE=/opt/vyatta/sbin/vyatta-cfg-cmd-wrapper
+# Command for running an operational command (ditto)
+OPCMD=/opt/vyatta/bin/vyatta-op-cmd-wrapper
+
+# Set an env variable for use by the vyatta-cfg-cmd-wrapper script which, if you don't, 
+# each command invisibly stores your process id as a session identifier in the depths 
+# of vyatta somewhere and every command tries to use that session opened with a begin command.
+# Which is sine until you run a command which spawns a subshell. Then it's differenet
+# Fortunately, thsi version is the script has this amendment (probably after some other poor
+# sod encountered it after hours of tearing their hair out).
+# To summarise, this makes explicit something which goes wrong because something you don't 
+# know is happening ensouters an error cuased by something else that you probably didn't
+# know was happening
+export CMD_WRAPPER_SESSION_ID=$$
+
+# Regex for matching IP addresses
+IP_REGEX="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
+# Regex for matching FQDNs
+DOMAIN_REGEX="^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+$"
+
+# Get the WAN IP address dynamically using an external service (in this example, using ifconfig.me)
+WAN_IP=$(curl -s ifconfig.me)
+
+# Check it's a fully-formed IP address - abort if not
+if ! [[ $WAN_IP =~ $IP_REGEX ]]; then
+    echo "$(date +"%Y-%m-%d %H:%M:%S"): local WAN IP address was returned as '${WAN_IP}' - invalid form, so aborting"
+    exit
+fi
+
+# VPN connection status check function
+check_and_modify_vpns() {
+    # Dynamically get the list of site-to-site VPNs
+    VPN_NAMES=($($CONFIGURE show vpn ipsec site-to-site | grep "peer" | awk '{print $2}'))
+
+    # Loop through each VPN definition and check if local-address or remote-address differs
+    for VPN_NAME in "${VPN_NAMES[@]}"; do
+
+	# Get the local-address of the VPN
+        LOCAL_ADDRESS=$($CONFIGURE show vpn ipsec site-to-site peer $VPN_NAME local-address | awk '{print $2}')
+
+	# Get the FQDN and proxy provider of the remote. This is in the description field in one of these two forms:
+	#      exampledomain.com              ## for unproxied domains
+	#      exampledomain.com:cloudflare   ## for a domain proxied through cloudflare
+	read -r FQDN PROXY <<< $(echo $($CONFIGURE show vpn ipsec site-to-site peer $VPN_NAME description ) | awk '{print $2}' | awk -F: '{print $1, $2}')
+
+        # Check it's a fully-formed FQDN - abort if not 
+        if ! [[ $FQDN =~ $DOMAIN_REGEX ]]; then
+            echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : FQDN came back from the config as '${FQDN}' for peer ${VPN_NAME} - invalid form, so aborting"
+            exit
+        fi
+       
+	if [ -n "$PROXY" ]; then
+	    # Resolve FQDN to IP address using the function for that provider
+	    RESOLVED_IP=$(${INSTALL_DIR}/get_domain_ip_${PROXY} ${FQDN})
+
+            # Check it's a fully-formed IP address - abort if not
+            if ! [[ $RESOLVED_IP =~ $IP_REGEX ]]; then
+                echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : remote IP address was discovered as '${RESOLVED_IP}' via provider '${PROXY}' - invalid form, so aborting"
+                exit
+            fi
+	else
+	    RESOLVED_IP=$(host $FQDN | grep -m 1 "IPv4" | awk '{print $5}')
+
+            # Check it's a fully-formed IP address - abort if not
+            if ! [[ $RESOLVED_IP =~ $IP_REGEX ]]; then
+                echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : remote IP address was discovered as '${RESOLVED_IP}' directly - invalid form, so aborting"
+                exit
+            fi
+        fi
+        # Build up configuration commands based on changes
+        EXISTING_CONFIG=""
+        CONFIG_COMMANDS=""
+
+        # Check if remote-address differs and recreate VPN if needed
+        if [ "$RESOLVED_IP" != "$VPN_NAME" ]; then
+            echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : $VPN_NAME remote address has changed to $RESOLVED_IP. Recreating the VPN."
+            
+            # Extract existing VPN configuration (except for the lines we want to modify or ignore
+	    # we get rif of remote-address  as we don't need it)
+            EXISTING_CONFIG+=$($OPCMD show configuration commands | grep "^set vpn ipsec site-to-site peer $VPN_NAME" | grep -v "remote-address")
+            # Delete the existing VPN configuration
+            CONFIG_COMMANDS+="delete vpn ipsec site-to-site peer $VPN_NAME"$'\n'
+            
+            # Recreate the VPN with updated parameters
+            CONFIG_COMMANDS+=$(echo "$EXISTING_CONFIG" | sed "s/$VPN_NAME/$RESOLVED_IP/")
+        fi
+
+        # Check if local-address differs and update if needed
+        # (it will overwrite the one written above if both have changed)
+        if [ "$LOCAL_ADDRESS" != "$WAN_IP" ]; then
+            echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : $VPN_NAME local address has changed to $WAN_IP. Updating local_address."
+
+            # Extract existing config for the local address to be changed
+            if [ -n "$EXISTING_CONFIG" ]; then
+                EXISTING_CONFIG="$EXISTING_CONFIG"$'\n'
+            fi
+            EXISTING_CONFIG+=$($OPCMD show configuration commands | grep "^set vpn ipsec site-to-site peer $VPN_NAME local-address")
+
+            # The command for updating the local-address
+            if [ -n "$CONFIG_COMMANDS" ]; then
+                CONFIG_COMMANDS="$CONFIG_COMMANDS"$'\n'
+            fi
+            CONFIG_COMMANDS+="set vpn ipsec site-to-site peer $RESOLVED_IP local-address $WAN_IP"
+        fi
+
+        # Run the configuration commands within a single configure session
+        if [ -n "$CONFIG_COMMANDS" ]; then
+            # Grrr... right, the script that lets you get the config commands returns
+            # single quotes around some of  the values - something which the command
+            # from the same people will not accept
+            CONFIG_COMMANDS="${CONFIG_COMMANDS//\'/}"
+
+	    # Print out the commands to be applied and those to be replaced if we are in verbose mode
+            if [ -n "$VERBOSE" ]; then
+                echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : Existing config to be replaced:"
+                echo "$EXISTING_CONFIG"
+		echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : Config to be applied:"
+		echo "$CONFIG_COMMANDS"
+  	    fi
+
+            # Apply the config changes
+            echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : Applying configuration changes for VPN $VPN_NAME/$RESOLVED_IP"
+
+            ERRCOUNT=0
+
+            # Set up the sessions and include in the error count if it fails
+	    ERR=$($CONFIGURE begin 2>&1) && [ -n "$ERR" ] && ((ERRCOUNT++))
+
+            # Apply each command in the list - incrementin the errorcount each time something is returned
+	    while read -r line; do
+                ERR=$($CONFIGURE $line 2>&1)
+                [ -n "$ERR" ] && ((ERRCOUNT++))
+            done < <(echo -e "$CONFIG_COMMANDS")
+
+            # Check if we have had any errors so far 
+            if [ $ERRCOUNT != 0 ]; then
+                # We have, so abort and donnlt attempt the commit
+                echo  "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : Aborting and siscarding any changes made -  config commands have ${ERRCOUNT} errors"
+                $CONFIGURE discard
+            else
+		# We have no errors so far so check if we are in a dryrun
+                if [ -n "$DRYRUN" ]; then
+                    # We are, so abort any further action
+                    echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : No changes applied - dryrun"
+                    $CONFIGURE discard
+                else
+                    # We're not - it's a live run, so issue a commit
+                    ERR=$($CONFIGURE commit 2>&1)
+                    # Check if the commit failed
+                    if [ -n "$ERR" ]; then
+                        # It failed, so abort and discard any changes   
+                        echo  "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : Aborting - commit reported \'$ERR\'"
+                        $CONFIGURE discard
+                    else
+                        # It committed successfully, so save the new config to boot.conf
+                        $CONFIGURE save
+		        echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : is updated and operational"
+                    fi
+                fi
+
+		# We're done - end the session  
+		$CONFIGURE end
+            fi
+        else
+            # No changes are required - only report this if we are in info mode 
+            if [ -n "$INFO" ]; then
+                echo "$(date +"%Y-%m-%d %H:%M:%S"): $FQDN : No changes required"
+            fi    
+        fi        
+    done
+}
+
+# Main script execution
+check_and_modify_vpns

@@ -1,0 +1,45 @@
+#!/bin/bash
+#################
+# Gets the real origin IP address of a router that a Cloudflare domain (or subdomain) proxies
+# Takes one parameter:
+#     - the domain name for which the IP address should be returned
+# It returns, on stdout:
+#     - the IPv4 address of the domain
+# It will read a ./.config/maintain_ipsec_vti_vpn.conf file with a section per domain
+# Each section is of the standard ini form:
+#    [yourdomain]         ## this must match the FQDN of an Edgerouter
+#    API_KEY = yourapikey ## this is an API key from the Cloudflare profile owning the domain
+#    EMAIL   = your email ## this is the login email of the Cloudflare profile owning the domain
+#    ZONE_ID = zoneid     ## this is a unique identifier for the parent domain in question from Cloudflare Overview page of the domain
+
+# get the DOMAIN_NAME passed in
+DOMAIN_NAME=$1
+
+# set the config file that we need
+CONFIG_FILE="${INSTALL_DIR}/get_domain_ip_cloudflare.conf"
+
+# Bring in the standard ini reading config function which will use that CONFIG_FILE
+source ${INSTALL_DIR}/ini-file-parser.sh 
+
+# Process the config file
+process_ini_file $CONFIG_FILE
+
+# Read in config
+API_KEY=$(get_value "$DOMAIN_NAME" "API_KEY")
+EMAIL=$(get_value "$DOMAIN_NAME" "EMAIL")
+ZONE_ID=$(get_value "$DOMAIN_NAME" "ZONE_ID")
+
+# Cloudflare API endpoint for zone details
+API_URL="https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=A&name=$DOMAIN_NAME"
+
+# Make the API request to Cloudflare
+RESPONSE=$(curl -s -X GET "$API_URL" \
+	-H "X-Auth-Email: $EMAIL" \
+	-H "X-Auth-Key: $API_KEY" \
+	-H "Content-Type: application/json")
+
+# Parse the JSON response to get the IP address from Cloudflare settings
+CLOUDFLARE_IP=$(echo "$RESPONSE" | grep -Eo '"content"[^,]*' | grep -Eo '[^:]*$' | sed 's/^"\(.*\)"$/\1/')
+
+# return the results
+echo $CLOUDFLARE_IP
