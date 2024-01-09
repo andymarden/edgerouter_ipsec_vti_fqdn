@@ -155,10 +155,10 @@ set vpn ipsec site-to-site peer xx.xx.xx.xx description example.domain.com:cloud
 ```
 Also, you will need to add your Cloudflare access info to `get domain_ip_cloudflare.conf` for each domain (copy/paste if they are the same). You can including all FQDNs that participate in a VPN across your whole network and then you can just copy the same config to all Edgerouters:
 ```
-[example.com]          ## must match the FQDN you have eneterd into the description field above
+[example.com]          ## must match the FQDN you have entered into the description field above
 API_KEY = yourapikey   ## the Global API key from the Cloudflare profile owning the domain
 EMAIL   = youremail    ## thethe login email of the Cloudflare profile owning the domain
-ZONE_ID = zoneid       ## the unique identifier for the domain in question from Cloudflare Overviiew page
+ZONE_ID = zoneid       ## the unique identifier for the domain in question from Cloudflare Overview page
 ```
 When it encounters a `:` after the FQDN, it takes what is after that (in this case `cloudflare` and calls a script called get_domain_ip_`cloudflare` which then uses `ini_file_parser.sh` to read the get_domain_ip_`cloudflare`.conf file to access the Cloudflare API and return the IP address you are looking for.
 ## Adding your own External Proxy Provider 
