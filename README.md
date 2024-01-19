@@ -44,7 +44,7 @@ set vpn ipsec site-to-site peer xx.xx.xx.xx description example.domain.com
 commit; save
 exit
 ```
-Firstly, I suggest running the script `maintain_ipsec_vti_vpn-fqdn` manually to check it works ok. This script take no arguments but has three optional flags you can set:
+Firstly, I suggest running the script `maintain_ipsec_vti_vpn_fqdn` manually to check it works ok. This script take no arguments but has three optional flags you can set:
 - `-v` to print out the config change commands that are going to be applied and the ones it is replacing
 - `-i` if no changes are required in a run, still log confirmation of the run
 - `-d` to do a dry run: no changes will be applied
