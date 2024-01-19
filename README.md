@@ -73,7 +73,7 @@ set system task-scheduler task checkVPNs executable arguments -vid
 commit; save
 exit
 ```
-You can check what this has set in teh crontab by doing `cat /etc/cron.d/vyatta-crontab`
+You can check what this has set in the crontab by doing `cat /etc/cron.d/vyatta-crontab`
 
 Note that it has `-vid` - logging everything as a dryrun first. You can check the logs at `var/log/maintain_ipsec_vti_fqdn.log` and, when you are happy, take off the `d` by setting that config line again without it. You may also remove the `i` if you are concerned about the log filling up with one line per run per VPN. The `v` is probably OK - up to you: it will only log something if there is a change and that should not be too frequent so probably no harm.
 ### Trigger from VPN event
