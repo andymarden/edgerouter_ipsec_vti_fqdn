@@ -25,8 +25,8 @@ There are extensions for externally-proxied IP addresses (see below)
 ## Installation
 Take all the scripts in this repo (you only actually need the first one unless you are dealing with a proxying provider like Cloudflare):
 - `maintain_ipsec_vti_vpn_fqdn`
-- `get_domain_ip_cloudflare
-- `get domain_ip_cloudflare.conf
+- `get_domain_ip_cloudflare`
+- `get domain_ip_cloudflare.conf`
 - `ini-file-parser.sh`
 and copy them to a directory on the local Edgerouter (I put it in `/config/scripts` as per the guidance as it is untouched by upgrades). In that directory, run (if required):
 ```
