@@ -1,5 +1,5 @@
 # Edgerouter IPSEC VTI FQDN (for Dynamic IP)
-This script provides a workaround to allow you to maintain IPSEC VTI-base site-to-site VPNs based on FQDNs. It is especially useful where one or more of your ISPs provides you with a dynamic IP address rather than static.
+This script provides a workaround to allow you to maintain IPSEC VTI-based site-to-site VPNs based on FQDNs. It is especially useful where one or more of your ISPs provides you with a dynamic IP address rather than static.
 
 It should be installed on any Edgerouter on your network which is at one end of such a VPN between Edgerouters and will automatically update the ER config at each end of the IP address for the FQDN if one of them changes.
 
